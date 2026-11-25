@@ -1,0 +1,5 @@
+target
+.git
+host_key
+accounts.*
+!src/accounts.rs
