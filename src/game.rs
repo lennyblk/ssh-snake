@@ -16,7 +16,7 @@ pub const READY: Duration = Duration::from_secs(4);
 pub const ROUND_END: Duration = Duration::from_secs(4);
 pub const RESULTS: Duration = Duration::from_secs(8);
 /// Manches pour gagner le match, et garde-fou contre les nuls à répétition.
-pub const ROUNDS_TO_WIN: u32 = 3;
+pub const ROUNDS_TO_WIN: u32 = 2;
 const MAX_ROUNDS: u32 = 9;
 /// Serpents par manche ; au-delà, spectateurs, prioritaires au match suivant.
 pub const MAX_SNAKES: usize = 24;
@@ -139,11 +139,30 @@ impl Game {
             chat_tokens: CHAT_BURST,
             last_chat: now,
         });
+        self.enter_round(id);
         self.tick(now);
         if let Phase::Lobby { start_at: Some(t) } = self.phase {
             let t = t.max((now + JOIN_GRACE).min(self.latest_start));
             self.phase = Phase::Lobby { start_at: Some(t) };
         }
+    }
+
+    /// Pendant le décompte d'une manche, entre tout de suite dans l'arène.
+    fn enter_round(&mut self, id: u64) {
+        let Some(p) = self.players.iter_mut().find(|p| p.id == id && p.ready) else { return };
+        if matches!(self.phase, Phase::Ready { .. })
+            && let Some(a) = &mut self.arena
+            && a.snakes.len() < MAX_SNAKES
+            && a.snake(id).is_none()
+            && a.add(id, &p.name, p.color)
+        {
+            p.in_match = true;
+        }
+    }
+
+    /// Entrera dans le match à la prochaine manche.
+    pub fn waiting(&self, id: u64) -> bool {
+        self.player(id).is_some_and(|p| p.ready && !p.in_match)
     }
 
     pub fn leave(&mut self, id: u64, now: Instant) {
@@ -163,6 +182,13 @@ impl Game {
     /// Entrée dans le salon : départ solo si seul prêt, sinon bascule prêt / pas prêt.
     pub fn press_enter(&mut self, id: u64, now: Instant) {
         if !matches!(self.phase, Phase::Lobby { .. }) {
+            // En plein match, un spectateur peut demander à entrer (ou y renoncer).
+            if !matches!(self.phase, Phase::Results { .. })
+                && let Some(p) = self.players.iter_mut().find(|p| p.id == id && !p.in_match)
+            {
+                p.ready = !p.ready;
+                self.enter_round(id);
+            }
             return;
         }
         let ready = self.ready_count();
@@ -441,11 +467,11 @@ mod tests {
     }
 
     #[test]
-    fn first_to_three_wins_the_match() {
+    fn first_to_two_wins_the_match() {
         let (mut g, mut t) = in_round(3);
-        for (n, w) in [1, 2, 1, 1].into_iter().enumerate() {
+        for (n, w) in [1, 2, 1].into_iter().enumerate() {
             win(&mut g, w, t);
-            if n < 3 {
+            if n < 2 {
                 assert!(matches!(g.phase, Phase::RoundEnd { .. }));
                 t += ROUND_END;
                 g.tick(t);
@@ -456,7 +482,7 @@ mod tests {
         assert!(matches!(g.phase, Phase::Results { .. }));
         assert_eq!(g.champion.as_deref(), Some("p1"));
         let s = &g.player(1).unwrap().stats;
-        assert_eq!((s.rounds, s.round_wins, s.match_wins), (4, 3, 1));
+        assert_eq!((s.rounds, s.round_wins, s.match_wins), (3, 2, 1));
         g.tick(t + RESULTS);
         assert!(matches!(g.phase, Phase::Lobby { start_at: Some(_) }));
         assert!(g.players.iter().all(|p| p.points == 0));
@@ -548,5 +574,63 @@ mod tests {
         assert!(g.say(1, "h\u{1b}é", t));
         assert_eq!(g.chat[0].text, "hé");
         assert!(!g.chat_open(t + secs(8)));
+    }
+
+    #[test]
+    fn joining_during_countdown_enters_immediately() {
+        let (mut g, t) = in_round(2);
+        win(&mut g, 1, t);
+        let t = t + ROUND_END;
+        g.tick(t);
+        assert!(matches!(g.phase, Phase::Ready { .. }));
+        g.join(9, "eve", Stats::default(), t);
+        let a = g.arena.as_ref().unwrap();
+        assert_eq!(a.snakes.len(), 3);
+        assert_eq!(a.snake(9).unwrap().body.len(), a.snake(1).unwrap().body.len());
+        g.tick(t + READY);
+        assert!(matches!(g.phase, Phase::Round { .. }));
+        win(&mut g, 9, t + READY);
+        assert_eq!(g.player(9).unwrap().points, 1);
+    }
+
+    #[test]
+    fn spectator_can_ask_to_enter_mid_match() {
+        let (mut g, t) = game(3);
+        g.press_enter(3, t);
+        let t = t + MAX_COUNTDOWN;
+        g.tick(t);
+        g.tick(t + READY);
+        assert!(g.arena.as_ref().unwrap().snake(3).is_none() && !g.waiting(3));
+        g.press_enter(3, t + READY);
+        g.press_enter(1, t + READY);
+        assert!(g.waiting(3) && g.player(1).unwrap().ready);
+        win(&mut g, 1, t + READY);
+        g.tick(t + READY + ROUND_END);
+        assert!(g.arena.as_ref().unwrap().snake(3).is_some());
+    }
+
+    #[test]
+    fn joining_solo_countdown_makes_it_a_match() {
+        let (mut g, t) = game(1);
+        g.restart(1, t);
+        g.join(2, "b", Stats::default(), t);
+        g.tick(t + READY);
+        win(&mut g, 2, t + READY);
+        assert!(matches!(g.phase, Phase::RoundEnd { .. }));
+    }
+
+    #[test]
+    fn countdown_joins_stop_at_the_limit() {
+        let (mut g, t) = game(2);
+        let t = t + MAX_COUNTDOWN;
+        g.tick(t);
+        for id in 10..50 {
+            g.join(id, &format!("x{id}"), Stats::default(), t);
+        }
+        let a = g.arena.as_ref().unwrap();
+        assert!(a.snakes.len() <= MAX_SNAKES && a.snakes.len() > 15);
+        for (i, s) in a.snakes.iter().enumerate() {
+            assert!(a.snakes[i + 1..].iter().all(|o| s.body.iter().all(|c| !o.body.contains(c))));
+        }
     }
 }

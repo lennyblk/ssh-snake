@@ -64,6 +64,26 @@ pub struct Snake {
     grow: usize,
 }
 
+impl Snake {
+    fn new(id: u64, name: &str, color: usize, body: VecDeque<Cell>, dir: Dir) -> Self {
+        Snake {
+            id,
+            name: name.to_string(),
+            color,
+            body,
+            alive: true,
+            kills: 0,
+            longest: START_LEN,
+            active: false,
+            killer: None,
+            boost: 0,
+            dir,
+            turns: VecDeque::new(),
+            grow: 0,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Arena {
     pub snakes: Vec<Snake>,
@@ -95,26 +115,32 @@ impl Arena {
                 };
                 let d = dir.delta();
                 let body = (0..START_LEN as i32).map(|k| (x - d.0 * k, y - d.1 * k)).collect();
-                Snake {
-                    id: *id,
-                    name: name.clone(),
-                    color: *color,
-                    body,
-                    alive: true,
-                    kills: 0,
-                    longest: START_LEN,
-                    active: false,
-                    killer: None,
-                    boost: 0,
-                    dir,
-                    turns: VecDeque::new(),
-                    grow: 0,
-                }
+                Snake::new(*id, name, *color, body, dir)
             })
             .collect();
         let mut arena = Arena { snakes, food: Vec::new(), margin: 0, step: 0, solo: players.len() < 2 };
         arena.feed();
         arena
+    }
+
+    /// Ajoute un serpent avant le départ, loin des autres. Faux s'il n'y a pas de place.
+    pub fn add(&mut self, id: u64, name: &str, color: usize) -> bool {
+        for _ in 0..200 {
+            let x = rand::random_range(10..W - 10);
+            let y = rand::random_range(4..H - 4);
+            let dir = if x < W / 2 { Dir::Right } else { Dir::Left };
+            let d = dir.delta();
+            let body: VecDeque<Cell> = (0..START_LEN as i32).map(|k| (x - d.0 * k, y)).collect();
+            let near = |a: &Cell, b: &Cell| (a.0 - b.0).abs() < 8 && (a.1 - b.1).abs() < 3;
+            let busy = self.snakes.iter().flat_map(|s| &s.body).any(|c| body.iter().any(|b| near(b, c)));
+            if !busy {
+                self.food.retain(|c| !body.contains(c));
+                self.snakes.push(Snake::new(id, name, color, body, dir));
+                self.solo = false;
+                return true;
+            }
+        }
+        false
     }
 
     pub fn snake(&self, id: u64) -> Option<&Snake> {

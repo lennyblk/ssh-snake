@@ -185,7 +185,7 @@ fn lobby(buf: &mut Buffer, area: Rect, g: &Game, me: u64, draft: &str, start: Op
         Span::styled("  ·  ", fg(HAIRLINE)),
         Span::styled("mur ou corps : mort", bold(BAD)),
         Span::styled("  ·  ", fg(HAIRLINE)),
-        Span::styled("dernier en vie : 1 point (3 = gagné)", bold(GOOD)),
+        Span::styled(format!("dernier en vie : 1 point ({ROUNDS_TO_WIN} = gagné)"), bold(GOOD)),
     ]);
     center(buf, area, y, rules);
     y += 1;
@@ -322,6 +322,7 @@ fn play(buf: &mut Buffer, full: Rect, g: &Game, me: u64, now: Instant) {
             let by = s.killer.as_ref().map_or("le mur ou toi-même".into(), |k| k.clone());
             Line::styled(format!("MORT, piégé par {by}"), bold(BAD))
         }
+        None if g.waiting(me) => Line::styled("TU ENTRES À LA PROCHAINE MANCHE", bold(GOLD)),
         None => Line::styled("SPECTATEUR", bold(DIM)),
     };
     put(buf, area, area.y, left);
@@ -366,7 +367,11 @@ fn play(buf: &mut Buffer, full: Rect, g: &Game, me: u64, now: Instant) {
         spans.push(Span::raw("  "));
     }
     put(buf, area, field.bottom() + 1, Line::from(spans));
-    let mut keys = vec![("← ↑ ↓ →", "tourner"), ("Espace", "foncer (-2)")];
+    let mut keys = match mine {
+        Some(_) => vec![("← ↑ ↓ →", "tourner"), ("Espace", "foncer (-2)")],
+        None if g.waiting(me) => vec![("Entrée", "rester spectateur")],
+        None => vec![("Entrée", "entrer à la prochaine manche")],
+    };
     if g.alone() {
         keys.push(("Tab", "relancer"));
     }
